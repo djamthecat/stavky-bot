@@ -1,21 +1,26 @@
 import os
-import requests
+import time
 import telebot
 from flask import Flask, request
 from threading import Thread
-import time
 from bs4 import BeautifulSoup
+import requests
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from webdriver_manager.chrome import ChromeDriverManager
 
 TOKEN = os.environ['TOKEN']
+RENDER_URL = os.environ['RENDER_URL']
 bot = telebot.TeleBot(TOKEN)
-
 USERS = []
 
 app = Flask(__name__)
 
+# --- Flask routes ---
 @app.route('/')
 def index():
-    return "Bot is running!"
+    return "Football Signals Bot is running!"
 
 @app.route('/' + TOKEN, methods=['POST'])
 def webhook():
@@ -25,15 +30,15 @@ def webhook():
 
 @app.route('/set_webhook', methods=['GET', 'POST'])
 def set_webhook():
-    url = os.environ['RENDER_URL']
-    s = bot.set_webhook(f"{url}/{TOKEN}")
+    s = bot.set_webhook(f"{RENDER_URL}/{TOKEN}")
     return "Webhook set!" if s else "Webhook failed!"
 
+# --- Telegram handlers ---
 @bot.message_handler(commands=['start'])
 def start(message):
     if message.chat.id not in USERS:
         USERS.append(message.chat.id)
-    bot.send_message(message.chat.id, "Привіт! Ти отримуватимеш сигнали ставок.")
+    bot.send_message(message.chat.id, "Привіт! Ти отримуватимеш футбольні сигнали (1X2, тотали, фори).")
     print("USERS:", USERS)
 
 @bot.message_handler(commands=['stop'])
@@ -43,95 +48,105 @@ def stop(message):
     bot.send_message(message.chat.id, "Сигнали більше не надсилатимуться.")
     print("USERS:", USERS)
 
-def get_inforadar_signals():
-    url = "https://inforadar.live/"
+# --- Список сайтів ---
+sites = [
+    {"name": "Inforadar", "url": "https://inforadar.live/", "signal_class": "signal"},
+    {"name": "Betwatch", "url": "https://betwatch.fr/", "signal_class": "signal"},
+    {"name": "SkyBet", "url": "https://www.skybet.com/football", "signal_class": "signal"},
+    {"name": "Unibet", "url": "https://www.unibet.com/betting/football", "signal_class": "signal"},
+]
+
+prev_signals_data = {}  # попередні сигнали
+
+# --- Визначення типу ставки ---
+def get_bet_type(prediction):
+    pred = prediction.lower()
+    if any(x in pred for x in ["over", "under", "тотал"]):
+        return "Тотал"
+    elif any(x in pred for x in ["фора", "+", "-"]):
+        return "Фора"
+    elif any(x in pred for x in ["1", "x", "2"]):
+        return "Результат"
+    else:
+        return "Інше"
+
+# --- HTML-парсинг ---
+def get_site_signals(site, prev_data):
     signals = []
     try:
-        r = requests.get(url)
+        r = requests.get(site['url'], timeout=10)
         soup = BeautifulSoup(r.text, 'html.parser')
-        for s in soup.find_all('div', class_='signal'):
-            match = s.find('span', class_='match').text.strip()
-            prediction = s.find('span', class_='prediction').text.strip()
-            confidence = s.find('span', class_='confidence').text.strip()
-            signals.append({"site": "Inforadar", "match": match, "prediction": prediction, "confidence": confidence})
+        for s in soup.find_all('div', class_=site['signal_class']):
+            match_tag = s.find('span', class_='match')
+            prediction_tag = s.find('span', class_='prediction')
+            confidence_tag = s.find('span', class_='confidence')
+            odds_tag = s.find('span', class_='odds')
+            if not match_tag or not prediction_tag:
+                continue
+            match = match_tag.text.strip()
+            prediction = prediction_tag.text.strip()
+            bet_type = get_bet_type(prediction)
+            confidence = int(confidence_tag.text.strip().replace('%','')) if confidence_tag else 0
+            odds = float(odds_tag.text.strip()) if odds_tag else 0
+            identifier = f"{site['name']}|{match}|{prediction}"
+            if identifier not in prev_data or abs(prev_data[identifier]['confidence'] - confidence) >= 5 or abs(prev_data[identifier]['odds'] - odds) >= 0.05:
+                signals.append({"site": site['name'], "match": match, "prediction": prediction, "bet_type": bet_type, "confidence": confidence, "odds": odds})
+                prev_data[identifier] = {"confidence": confidence, "odds": odds}
     except Exception as e:
-        print("Error parsing Inforadar:", e)
+        print(f"Error parsing {site['name']}: {e}")
     return signals
 
-def get_betwatch_signals():
-    url = "https://betwatch.fr/"
+# --- Selenium для Betfair ---
+def get_betfair_signals(prev_data):
     signals = []
     try:
-        r = requests.get(url)
-        soup = BeautifulSoup(r.text, 'html.parser')
-        for s in soup.find_all('div', class_='signal'):
-            match = s.find('span', class_='match').text.strip()
-            prediction = s.find('span', class_='prediction').text.strip()
-            confidence = s.find('span', class_='confidence').text.strip()
-            signals.append({"site": "Betwatch", "match": match, "prediction": prediction, "confidence": confidence})
+        chrome_options = Options()
+        chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        driver = webdriver.Chrome(ChromeDriverManager().install(), options=chrome_options)
+        driver.get("https://www.betfair.com/exchange/football")
+        time.sleep(5)
+
+        events = driver.find_elements(By.CLASS_NAME, "market-wrapper")
+        for event in events:
+            match_tag = event.find_element(By.CLASS_NAME, "market-name")
+            match = match_tag.text.strip()
+            outcomes = event.find_elements(By.CLASS_NAME, "runner")
+            for o in outcomes:
+                pred_tag = o.find_element(By.CLASS_NAME, "runner-name")
+                odds_tag = o.find_element(By.CLASS_NAME, "odds")
+                market_tag = o.find_element(By.CLASS_NAME, "market-type")
+                prediction = pred_tag.text.strip()
+                odds = float(odds_tag.text.strip())
+                market_type = market_tag.text.strip()
+                bet_type = "Результат" if market_type=="MATCH_ODDS" else "Тотал" if market_type=="TOTAL_GOALS" else "Фора"
+                identifier = f"Betfair|{match}|{prediction}"
+                if identifier not in prev_data or abs(prev_data[identifier]['odds'] - odds) >= 0.05:
+                    signals.append({"site": "Betfair", "match": match, "prediction": prediction, "bet_type": bet_type, "confidence": 100, "odds": odds})
+                    prev_data[identifier] = {"confidence": 100, "odds": odds}
+        driver.quit()
     except Exception as e:
-        print("Error parsing Betwatch:", e)
+        print("Error parsing Betfair:", e)
     return signals
 
-def get_bet365_signals():
-    url = "https://www.bet365.com/"
-    signals = []
-    try:
-        r = requests.get(url)
-        soup = BeautifulSoup(r.text, 'html.parser')
-        for s in soup.find_all('div', class_='bet365-signal'):
-            match = s.find('span', class_='bet365-match').text.strip()
-            prediction = s.find('span', class_='bet365-prediction').text.strip()
-            confidence = s.find('span', class_='bet365-confidence').text.strip()
-            signals.append({"site": "Bet365", "match": match, "prediction": prediction, "confidence": confidence})
-    except Exception as e:
-        print("Error parsing Bet365:", e)
-    return signals
-
-def get_skybet_signals():
-    url = "https://www.skybet.com/"
-    signals = []
-    try:
-        r = requests.get(url)
-        soup = BeautifulSoup(r.text, 'html.parser')
-        for s in soup.find_all('div', class_='skybet-signal'):
-            match = s.find('span', class_='skybet-match').text.strip()
-            prediction = s.find('span', class_='skybet-prediction').text.strip()
-            confidence = s.find('span', class_='skybet-confidence').text.strip()
-            signals.append({"site": "Sky Bet", "match": match, "prediction": prediction, "confidence": confidence})
-    except Exception as e:
-        print("Error parsing Sky Bet:", e)
-    return signals
-
-def get_unibet_signals():
-    url = "https://www.unibet.com/"
-    signals = []
-    try:
-        r = requests.get(url)
-        soup = BeautifulSoup(r.text, 'html.parser')
-        for s in soup.find_all('div', class_='unibet-signal'):
-            match = s.find('span', class_='unibet-match').text.strip()
-            prediction = s.find('span', class_='unibet-prediction').text.strip()
-            confidence = s.find('span', class_='unibet-confidence').text.strip()
-            signals.append({"site": "Unibet", "match": match, "prediction": prediction, "confidence": confidence})
-    except Exception as e:
-        print("Error parsing Unibet:", e)
-    return signals
-
-sent_signals = set()
-
+# --- Надсилання сигналів ---
 def send_signals():
-    global sent_signals
     while True:
-        all_signals = get_inforadar_signals() + get_betwatch_signals() + get_bet365_signals() + get_skybet_signals() + get_unibet_signals()
-        print("Found signals:", all_signals)
+        all_signals = []
+        for site in sites:
+            all_signals += get_site_signals(site, prev_signals_data)
+        all_signals += get_betfair_signals(prev_signals_data)
+        all_signals.sort(key=lambda x: (x['confidence'], x['odds']), reverse=True)
         for s in all_signals:
-            identifier = f"{s['site']}|{s['match']}|{s['prediction']}"
-            if identifier not in sent_signals:
-                msg = f"📌 Сайт: {s['site']}\n⚽ Матч: {s['match']}\n📊 Прогноз: {s['prediction']}\n🔥 Впевненість: {s['confidence']}"
-                for user in USERS:
+            msg = (f"📌 Сайт: {s['site']}\n⚽ Матч: {s['match']}\n"
+                   f"📊 Прогноз: {s['prediction']} ({s['bet_type']})\n"
+                   f"🔥 Впевненість: {s['confidence']}%\n💰 Коефіцієнт: {s['odds']}")
+            for user in USERS:
+                try:
                     bot.send_message(user, msg)
-                sent_signals.add(identifier)
+                except Exception as e:
+                    print(f"Error sending to {user}: {e}")
         time.sleep(120)
 
 Thread(target=send_signals).start()
