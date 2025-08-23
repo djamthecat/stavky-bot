@@ -6,7 +6,7 @@ from threading import Thread
 import time
 from bs4 import BeautifulSoup
 
-TOKEN = os.environ['TOKEN']  # Telegram токен
+TOKEN = os.environ['TOKEN']
 bot = telebot.TeleBot(TOKEN)
 
 USERS = []
@@ -19,18 +19,16 @@ def index():
 
 @app.route('/' + TOKEN, methods=['POST'])
 def webhook():
-    json_str = request.get_data().decode('UTF-8')
-    update = telebot.types.Update.de_json(json_str)
+    update = telebot.types.Update.de_json(request.get_data().decode('UTF-8'))
     bot.process_new_updates([update])
     return "ok", 200
 
 @app.route('/set_webhook', methods=['GET', 'POST'])
 def set_webhook():
-    url = os.environ['RENDER_URL']  # Твоє доменне ім'я Render
+    url = os.environ['RENDER_URL']
     s = bot.set_webhook(f"{url}/{TOKEN}")
     return "Webhook set!" if s else "Webhook failed!"
 
-# Команди Telegram
 @bot.message_handler(commands=['start'])
 def start(message):
     if message.chat.id not in USERS:
@@ -43,30 +41,52 @@ def stop(message):
         USERS.remove(message.chat.id)
     bot.send_message(message.chat.id, "Сигнали більше не надсилатимуться.")
 
-# Парсер inforadar.live
-def get_signals():
+# --- Парсери без API ---
+def get_inforadar_signals():
     url = "https://inforadar.live/"
+    signals = []
     try:
-        response = requests.get(url)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        signals = []
-        for signal in soup.find_all(class_='signal'):
-            match = signal.find(class_='match').text.strip()
-            prediction = signal.find(class_='prediction').text.strip()
-            confidence = signal.find(class_='confidence').text.strip()
-            signals.append({"match": match, "prediction": prediction, "confidence": confidence})
-        return signals
+        r = requests.get(url)
+        soup = BeautifulSoup(r.text, 'html.parser')
+        for s in soup.find_all(class_='signal'):  # адаптувати під HTML сайту
+            match = s.find(class_='match').text.strip()
+            prediction = s.find(class_='prediction').text.strip()
+            confidence = s.find(class_='confidence').text.strip()
+            signals.append({"site": "Inforadar", "match": match, "prediction": prediction, "confidence": confidence})
     except:
-        return []
+        pass
+    return signals
+
+def get_betwatch_signals():
+    url = "https://betwatch.fr/"
+    signals = []
+    try:
+        r = requests.get(url)
+        soup = BeautifulSoup(r.text, 'html.parser')
+        for s in soup.find_all(class_='signal'):  # адаптувати під HTML сайту
+            match = s.find(class_='match').text.strip()
+            prediction = s.find(class_='prediction').text.strip()
+            confidence = s.find(class_='confidence').text.strip()
+            signals.append({"site": "Betwatch", "match": match, "prediction": prediction, "confidence": confidence})
+    except:
+        pass
+    return signals
+
+# --- Логіка нових сигналів ---
+sent_signals = set()  # зберігаємо унікальні ідентифікатори
 
 def send_signals():
+    global sent_signals
     while True:
-        signals = get_signals()
-        for s in signals:
-            msg = f"⚽ Матч: {s['match']}\n📊 Прогноз: {s['prediction']}\n🔥 Впевненість: {s['confidence']}"
-            for user in USERS:
-                bot.send_message(user, msg)
-        time.sleep(3600)
+        all_signals = get_inforadar_signals() + get_betwatch_signals()
+        for s in all_signals:
+            identifier = f"{s['site']}|{s['match']}|{s['prediction']}"
+            if identifier not in sent_signals:
+                msg = f"📌 Сайт: {s['site']}\n⚽ Матч: {s['match']}\n📊 Прогноз: {s['prediction']}\n🔥 Впевненість: {s['confidence']}"
+                for user in USERS:
+                    bot.send_message(user, msg)
+                sent_signals.add(identifier)
+        time.sleep(60)  # перевірка кожну хвилину
 
 Thread(target=send_signals).start()
 
