@@ -73,12 +73,57 @@ def get_betwatch_signals():
         print("Error parsing Betwatch:", e)
     return signals
 
+def get_bet365_signals():
+    url = "https://www.bet365.com/"
+    signals = []
+    try:
+        r = requests.get(url)
+        soup = BeautifulSoup(r.text, 'html.parser')
+        for s in soup.find_all('div', class_='bet365-signal'):
+            match = s.find('span', class_='bet365-match').text.strip()
+            prediction = s.find('span', class_='bet365-prediction').text.strip()
+            confidence = s.find('span', class_='bet365-confidence').text.strip()
+            signals.append({"site": "Bet365", "match": match, "prediction": prediction, "confidence": confidence})
+    except Exception as e:
+        print("Error parsing Bet365:", e)
+    return signals
+
+def get_skybet_signals():
+    url = "https://www.skybet.com/"
+    signals = []
+    try:
+        r = requests.get(url)
+        soup = BeautifulSoup(r.text, 'html.parser')
+        for s in soup.find_all('div', class_='skybet-signal'):
+            match = s.find('span', class_='skybet-match').text.strip()
+            prediction = s.find('span', class_='skybet-prediction').text.strip()
+            confidence = s.find('span', class_='skybet-confidence').text.strip()
+            signals.append({"site": "Sky Bet", "match": match, "prediction": prediction, "confidence": confidence})
+    except Exception as e:
+        print("Error parsing Sky Bet:", e)
+    return signals
+
+def get_unibet_signals():
+    url = "https://www.unibet.com/"
+    signals = []
+    try:
+        r = requests.get(url)
+        soup = BeautifulSoup(r.text, 'html.parser')
+        for s in soup.find_all('div', class_='unibet-signal'):
+            match = s.find('span', class_='unibet-match').text.strip()
+            prediction = s.find('span', class_='unibet-prediction').text.strip()
+            confidence = s.find('span', class_='unibet-confidence').text.strip()
+            signals.append({"site": "Unibet", "match": match, "prediction": prediction, "confidence": confidence})
+    except Exception as e:
+        print("Error parsing Unibet:", e)
+    return signals
+
 sent_signals = set()
 
 def send_signals():
     global sent_signals
     while True:
-        all_signals = get_inforadar_signals() + get_betwatch_signals()
+        all_signals = get_inforadar_signals() + get_betwatch_signals() + get_bet365_signals() + get_skybet_signals() + get_unibet_signals()
         print("Found signals:", all_signals)
         for s in all_signals:
             identifier = f"{s['site']}|{s['match']}|{s['prediction']}"
