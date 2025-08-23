@@ -34,27 +34,28 @@ def start(message):
     if message.chat.id not in USERS:
         USERS.append(message.chat.id)
     bot.send_message(message.chat.id, "Привіт! Ти отримуватимеш сигнали ставок.")
+    print("USERS:", USERS)
 
 @bot.message_handler(commands=['stop'])
 def stop(message):
     if message.chat.id in USERS:
         USERS.remove(message.chat.id)
     bot.send_message(message.chat.id, "Сигнали більше не надсилатимуться.")
+    print("USERS:", USERS)
 
-# --- Парсери без API ---
 def get_inforadar_signals():
     url = "https://inforadar.live/"
     signals = []
     try:
         r = requests.get(url)
         soup = BeautifulSoup(r.text, 'html.parser')
-        for s in soup.find_all(class_='signal'):  # адаптувати під HTML сайту
-            match = s.find(class_='match').text.strip()
-            prediction = s.find(class_='prediction').text.strip()
-            confidence = s.find(class_='confidence').text.strip()
+        for s in soup.find_all('div', class_='signal'):
+            match = s.find('span', class_='match').text.strip()
+            prediction = s.find('span', class_='prediction').text.strip()
+            confidence = s.find('span', class_='confidence').text.strip()
             signals.append({"site": "Inforadar", "match": match, "prediction": prediction, "confidence": confidence})
-    except:
-        pass
+    except Exception as e:
+        print("Error parsing Inforadar:", e)
     return signals
 
 def get_betwatch_signals():
@@ -63,22 +64,22 @@ def get_betwatch_signals():
     try:
         r = requests.get(url)
         soup = BeautifulSoup(r.text, 'html.parser')
-        for s in soup.find_all(class_='signal'):  # адаптувати під HTML сайту
-            match = s.find(class_='match').text.strip()
-            prediction = s.find(class_='prediction').text.strip()
-            confidence = s.find(class_='confidence').text.strip()
+        for s in soup.find_all('div', class_='signal'):
+            match = s.find('span', class_='match').text.strip()
+            prediction = s.find('span', class_='prediction').text.strip()
+            confidence = s.find('span', class_='confidence').text.strip()
             signals.append({"site": "Betwatch", "match": match, "prediction": prediction, "confidence": confidence})
-    except:
-        pass
+    except Exception as e:
+        print("Error parsing Betwatch:", e)
     return signals
 
-# --- Логіка нових сигналів ---
-sent_signals = set()  # зберігаємо унікальні ідентифікатори
+sent_signals = set()
 
 def send_signals():
     global sent_signals
     while True:
         all_signals = get_inforadar_signals() + get_betwatch_signals()
+        print("Found signals:", all_signals)
         for s in all_signals:
             identifier = f"{s['site']}|{s['match']}|{s['prediction']}"
             if identifier not in sent_signals:
@@ -86,7 +87,7 @@ def send_signals():
                 for user in USERS:
                     bot.send_message(user, msg)
                 sent_signals.add(identifier)
-        time.sleep(60)  # перевірка кожну хвилину
+        time.sleep(120)
 
 Thread(target=send_signals).start()
 
